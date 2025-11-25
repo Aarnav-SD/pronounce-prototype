@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+.vscode/
+.idea/
+venv/
+uploads/
+*.mp3
+*.wav
+.DS_Store
