@@ -1,7 +1,6 @@
 import streamlit as st
 import requests
 import tempfile
-
 import os
 
 # Load custom CSS
@@ -10,6 +9,7 @@ with open(css_path) as f:
     st.markdown(f"<style>{f.read()}</style>", unsafe_allow_html=True)
 
 BACKEND_URL = "http://localhost:8000/process-audio/"
+BASE_URL = "http://localhost:8000"   # 🔥 added for safe audio playback
 
 st.title("Hindi Pronunciation Checker (Local Whisper)")
 st.write("Record your voice and check pronunciation — works fully offline.")
@@ -40,6 +40,11 @@ if audio_data and st.button("Check Pronunciation"):
         for w in res["word_results"]:
             css_class = "word-correct" if w["correct"] else "word-incorrect"
             st.markdown(f"<span class='{css_class}'>{w['word']}</span>", unsafe_allow_html=True)
+               # 🔊 Per-word pronunciation audio
+            if "tts_audio" in w and w["tts_audio"]:
+                st.audio(BASE_URL + w["tts_audio"])
+
 
         st.write("### Correct Pronunciation (TTS):")
-        st.audio("http://localhost:8000" + res["tts_url"])
+        # 🔥 FIXED: Always prepend backend host
+        st.audio(BASE_URL + res["tts_url"])

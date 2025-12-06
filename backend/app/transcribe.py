@@ -1,15 +1,17 @@
 import whisper
 
-model = whisper.load_model("tiny")  # or "medium", "large" if GPU available
+# Load a better model for Hindi
+model = whisper.load_model("medium")   # or "medium" if your CPU/GPU allows
 
 def transcribe_with_words(audio_path: str, language: str = "hi"):
     result = model.transcribe(
         audio_path,
         language=language,
         task="transcribe",
-        word_timestamps=True
+        word_timestamps=True,
+        fp16=False   # important for CPU stability
     )
-    # result["segments"] each have "words" with {"word", "start", "end"}
+
     words = []
     for seg in result.get("segments", []):
         for w in seg.get("words", []):
@@ -18,6 +20,7 @@ def transcribe_with_words(audio_path: str, language: str = "hi"):
                 "start": float(w["start"]),
                 "end": float(w["end"])
             })
+
     return {
         "text": result["text"],
         "words": words

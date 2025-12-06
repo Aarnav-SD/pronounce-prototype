@@ -29,6 +29,16 @@ def load_audio_mono(path: str, sample_rate: int = 16000):
         wav = torchaudio.functional.resample(wav, sr, sample_rate)
     return wav.squeeze(0), sample_rate
 
+
+# ⬇   UPDATE 1 — Added this new function  ⬇
+def normalize_embedding(tensor: torch.Tensor) -> torch.Tensor:
+    """
+    Ensures embedding is always CPU float32 for stable cosine similarity.
+    """
+    return tensor.detach().to("cpu", dtype=torch.float32)
+# ⬆  UPDATE 1 END  ⬆
+
+
 def get_embedding(audio_path: str) -> torch.Tensor:
     processor, model = _load_model()
     waveform, sr = load_audio_mono(audio_path, sample_rate=16000)
@@ -42,12 +52,19 @@ def get_embedding(audio_path: str) -> torch.Tensor:
 
     with torch.no_grad():
         outputs = model(inputs.input_values.to(DEVICE))
-        # outputs.last_hidden_state: (batch, time, hidden_dim)
         hidden_states = outputs.last_hidden_state[0]  # (time, hidden_dim)
 
-    # Mean pooling over time → single vector
+    # Mean pooling → single vector
     embedding = hidden_states.mean(dim=0)
+
+
+    # ⬇   UPDATE 2 — Normalizing embedding here  ⬇
+    embedding = normalize_embedding(embedding)
+    # ⬆  UPDATE 2 END  ⬆
+
+
     return embedding
+
 
 def cosine_similarity(a: torch.Tensor, b: torch.Tensor) -> float:
     a = a / (a.norm(p=2) + 1e-8)

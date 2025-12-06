@@ -22,9 +22,19 @@ app.add_middleware(
 UPLOAD_DIR = Path("uploads")
 UPLOAD_DIR.mkdir(exist_ok=True)
 
-# Serve uploaded TTS files
+# 🔥 NEW: Ensure per-word TTS directory exists BEFORE mounting
+Path("uploads/canonical/words").mkdir(parents=True, exist_ok=True)
+
+# Serve uploaded TTS files (GLOBAL TTS + uploads)
 app.mount("/static", StaticFiles(directory="uploads"), name="static")
 
+# 🔥 NEW: Serve per-word canonical TTS files ONLY
+# This does NOT affect any existing routes.
+app.mount(
+    "/static/tts_words",
+    StaticFiles(directory="uploads/canonical/words"),
+    name="tts_words"
+)
 
 @app.post("/process-audio/")
 async def process_audio(
