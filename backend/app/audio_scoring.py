@@ -1,72 +1,54 @@
 import torch
-import torchaudio
-from transformers import Wav2Vec2Processor, Wav2Vec2Model
-from pathlib import Path
-import soundfile as sf
-from typing import Optional
+import numpy as np
+import librosa
+import whisper
+from .model_loader import get_model, DEVICE
 
-DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-
-_MODEL_NAME = "facebook/wav2vec2-xls-r-300m"
-
-_processor = None
-_model = None
-
-def _load_model():
-    global _processor, _model
-    if _processor is None or _model is None:
-        _processor = Wav2Vec2Processor.from_pretrained(_MODEL_NAME)
-        _model = Wav2Vec2Model.from_pretrained(_MODEL_NAME).to(DEVICE)
-        _model.eval()
-    return _processor, _model
-
-def load_audio_mono(path: str, sample_rate: int = 16000):
-    wav, sr = torchaudio.load(path)
-    # Convert to mono if stereo
-    if wav.shape[0] > 1:
-        wav = wav.mean(dim=0, keepdim=True)
-    if sr != sample_rate:
-        wav = torchaudio.functional.resample(wav, sr, sample_rate)
-    return wav.squeeze(0), sample_rate
-
-
-# ⬇   UPDATE 1 — Added this new function  ⬇
-def normalize_embedding(tensor: torch.Tensor) -> torch.Tensor:
+def load_audio_16k(path_or_array):
     """
-    Ensures embedding is always CPU float32 for stable cosine similarity.
+    Ensures audio is 16kHz mono, whether input is a file path or a numpy array.
     """
-    return tensor.detach().to("cpu", dtype=torch.float32)
-# ⬆  UPDATE 1 END  ⬆
+    target_sr = 16000
+    
+    if isinstance(path_or_array, str):
+        # It's a file path
+        audio, _ = librosa.load(path_or_array, sr=target_sr, mono=True)
+    else:
+        # It's already a numpy array (from memory slicing)
+        audio = path_or_array
 
+    # CRITICAL FIX 1: Ensure Float32
+    return audio.astype(np.float32)
 
-def get_embedding(audio_path: str) -> torch.Tensor:
-    processor, model = _load_model()
-    waveform, sr = load_audio_mono(audio_path, sample_rate=16000)
+def get_whisper_embedding(input_data) -> torch.Tensor:
+    """
+    Extract a pronunciation embedding using Whisper's encoder.
+    """
+    model = get_model()
+    audio = load_audio_16k(input_data)
 
-    inputs = processor(
-        waveform.numpy(),
-        sampling_rate=sr,
-        return_tensors="pt",
-        padding=True
-    )
+    # CRITICAL FIX 2: Force 1D array (Flatten) to avoid "incorrect audio shape"
+    audio_tensor = torch.tensor(audio).flatten()
 
+    # CRITICAL FIX 3: Pad or Trim to 30 seconds
+    # Whisper's Encoder expects exactly 30s of audio (480,000 samples)
+    # This function handles the padding automatically.
+    audio_tensor = whisper.pad_or_trim(audio_tensor)
+
+    # Compute Log Mel Spectrogram
+    mel = whisper.log_mel_spectrogram(audio_tensor).to(DEVICE)
+    
+    # Encoder
     with torch.no_grad():
-        outputs = model(inputs.input_values.to(DEVICE))
-        hidden_states = outputs.last_hidden_state[0]  # (time, hidden_dim)
+        encoded = model.encoder(mel.unsqueeze(0)) # shape: (1, n_ctx, n_state)
 
-    # Mean pooling → single vector
-    embedding = hidden_states.mean(dim=0)
-
-
-    # ⬇   UPDATE 2 — Normalizing embedding here  ⬇
-    embedding = normalize_embedding(embedding)
-    # ⬆  UPDATE 2 END  ⬆
-
-
-    return embedding
-
+    # Average Pooling for a single vector
+    embedding = encoded.mean(dim=1).squeeze(0)
+    
+    # Normalize
+    embedding = embedding / (embedding.norm(p=2) + 1e-8)
+    
+    return embedding.cpu()
 
 def cosine_similarity(a: torch.Tensor, b: torch.Tensor) -> float:
-    a = a / (a.norm(p=2) + 1e-8)
-    b = b / (b.norm(p=2) + 1e-8)
     return float(torch.dot(a, b).item())

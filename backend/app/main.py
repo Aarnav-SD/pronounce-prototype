@@ -1,16 +1,18 @@
-from fastapi import FastAPI, UploadFile, File, Form
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pathlib import Path
+from pydub import AudioSegment
+import os
+import time
 import shutil
 
-from backend.app.transcribe import transcribe_with_words
-from backend.app.scoring import compute_text_score
-from backend.app.tts import create_tts
+# Internal imports
+from .transcribe import transcribe_with_words
+from .hybrid_scoring import compute_per_word_scores
 
 app = FastAPI()
 
-# Enable CORS for frontend
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -18,65 +20,112 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Directory for saving uploaded audio and TTS files
-UPLOAD_DIR = Path("uploads")
+BASE_DIR = Path(__file__).resolve().parent
+UPLOAD_DIR = BASE_DIR / "uploads"
 UPLOAD_DIR.mkdir(exist_ok=True)
 
-# 🔥 NEW: Ensure per-word TTS directory exists BEFORE mounting
-Path("uploads/canonical/words").mkdir(parents=True, exist_ok=True)
+app.mount("/static", StaticFiles(directory=str(UPLOAD_DIR)), name="static")
 
-# Serve uploaded TTS files (GLOBAL TTS + uploads)
-app.mount("/static", StaticFiles(directory="uploads"), name="static")
+LANG_MAP = {
+    "hindi": "hi", "hi": "hi",
+    "english": "en", "en": "en",
+    "spanish": "es", "es": "es", 
+    "french": "fr", "fr": "fr",
+    "german": "de", "de": "de",
+    "japanese": "ja", "ja": "ja"
+}
 
-# 🔥 NEW: Serve per-word canonical TTS files ONLY
-# This does NOT affect any existing routes.
-app.mount(
-    "/static/tts_words",
-    StaticFiles(directory="uploads/canonical/words"),
-    name="tts_words"
-)
+def detect_and_rename(filepath: Path) -> Path:
+    """Detects if file is WebM or WAV via Magic Bytes"""
+    with open(filepath, "rb") as f:
+        header = f.read(4)
+    
+    new_path = filepath
+    detected = "unknown"
+
+    if header.startswith(b'\x1a\x45\xdf\xa3'):
+        detected = "webm"
+        if filepath.suffix != ".webm":
+            new_path = filepath.with_suffix(".webm")
+            os.rename(filepath, new_path)
+    elif header.startswith(b'RIFF'):
+        detected = "wav"
+        if filepath.suffix != ".wav":
+            new_path = filepath.with_suffix(".wav")
+            os.rename(filepath, new_path)
+            
+    print(f"   🔎 Format Detected: {detected.upper()} (Header: {header.hex()})")
+    return new_path
 
 @app.post("/process-audio/")
-async def process_audio(
+def process_audio(
     file: UploadFile = File(...),
     target_text: str = Form(...),
     language: str = Form("hi")
 ):
-    """
-    Process uploaded audio:
-    1. Save audio
-    2. Transcribe audio
-    3. Compute word-level scoring
-    4. Generate TTS for target text
-    """
+    start_time = time.time()
+    temp_raw_path = None
+    
+    try:
+        print(f"\n" + "="*40)
+        print(f"--- 🎤 Processing Request ---")
+        
+        # 1. SETUP
+        iso_lang_code = LANG_MAP.get(language.lower().strip(), "en")
+        original_ext = Path(file.filename).suffix
+        temp_filename = f"raw_{int(time.time())}{original_ext}"
+        temp_raw_path = UPLOAD_DIR / temp_filename
+        
+        # 2. SAVE RAW FILE
+        with open(temp_raw_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+            
+        # 3. FIX EXTENSION (WebM vs WAV)
+        final_raw_path = detect_and_rename(temp_raw_path)
+        print(f"   💾 Raw Saved: {final_raw_path}")
 
-    # Save uploaded audio
-    filepath = UPLOAD_DIR / file.filename
-    with filepath.open("wb") as f:
-        shutil.copyfileobj(file.file, f)
+        # 4. SILENCE CHECK (The New Diagnostic)
+        try:
+            audio = AudioSegment.from_file(str(final_raw_path))
+            
+            # CHECK VOLUME
+            max_db = audio.max_dBFS
+            print(f"   🔊 Volume Level: {max_db:.2f} dB")
 
-    # Transcribe audio
-    result = transcribe_with_words(str(filepath), language)
-    transcription = result["text"]
-    segments = result["words"]  # optional: word-level timestamps
+            if max_db == -float('inf'):
+                print("   ❌ CRITICAL: The audio is PURE DIGITAL SILENCE.")
+                raise HTTPException(status_code=400, detail="Microphone sent silence. Check input device.")
+            elif max_db < -50:
+                 print("   ⚠️ WARNING: Audio is very quiet. Trying to normalize...")
+            
+            # Normalize
+            audio = audio.normalize()
+            
+            if audio.duration_seconds < 0.5:
+                 raise HTTPException(status_code=400, detail="Audio too short (< 0.5s)")
 
-    # Compute scoring (target_text first, then recognized transcription)
-    score_full = compute_text_score(target_text, transcription)
+        except Exception as e:
+            print(f"❌ Audio Decode Error: {e}")
+            raise HTTPException(status_code=400, detail=f"Audio error: {str(e)}")
 
-    # Convert scoring to frontend-friendly format
-    word_results = []
-    for w in score_full["word_alignment"]:
-        word_results.append({
-            "word": w["recognized"] if w["recognized"] else w["target"],
-            "correct": w["operation"] == "correct"
-        })
+        # 5. EXPORT CLEAN WAV
+        clean_filename = f"clean_{int(time.time())}.wav"
+        filepath = UPLOAD_DIR / clean_filename
+        audio = audio.set_frame_rate(16000).set_channels(1).set_sample_width(2)
+        audio.export(filepath, format="wav")
 
-    # Generate TTS for the target text
-    tts_path = create_tts(target_text, language)
-    tts_url = f"/static/{tts_path.name}"
+        # 6. SCORING
+        print(f"5. Sending to AI (Lang: {iso_lang_code})...")
+        scores = compute_per_word_scores(target_text, iso_lang_code, str(filepath))
+        
+        recog_text = " ".join([w.get('recognized', '') for w in scores.get('words', [])])
+        print(f"6. ✅ Recognized: '{recog_text}'")
+        print("="*40 + "\n")
 
-    return {
-        "transcription": transcription,
-        "word_results": word_results,
-        "tts_url": tts_url
-    }
+        return scores
+
+    except Exception as e:
+        print(f"❌ ERROR: {e}")
+        if temp_raw_path and os.path.exists(temp_raw_path):
+            os.remove(temp_raw_path)
+        raise HTTPException(status_code=500, detail=str(e))

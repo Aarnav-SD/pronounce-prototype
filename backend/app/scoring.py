@@ -3,35 +3,56 @@ import re
 from difflib import SequenceMatcher
 from jiwer import wer
 
+
 def normalize_text(text: str) -> str:
     """
     Normalize input text for comparison:
     - Unicode normalization (NFKC)
+    - Remove zero-width chars
+    - Remove punctuation/symbols, keep letters/numbers
     - Lowercase
-    - Remove punctuation
     - Collapse multiple spaces
+    Works safely for Indic scripts.
     """
     if not text:
         return ""
-    # Unicode normalization + lowercase
+
+    # Normalize compatibility forms
     text = unicodedata.normalize("NFKC", text)
+
+    # Remove zero-width joiner/non-joiner
+    text = text.replace("\u200c", "").replace("\u200d", "")
+
+    # Remove punctuation / symbols but keep letters, marks, numbers, spaces
+    cleaned_chars = []
+    for ch in text:
+        cat = unicodedata.category(ch)
+        if cat.startswith("P") or cat.startswith("S"):
+            # P* = punctuation, S* = symbol
+            continue
+        cleaned_chars.append(ch)
+
+    text = "".join(cleaned_chars)
+
+    # Lowercase (mostly no-op for Indic scripts but safe)
     text = text.lower()
-    # Remove punctuation
-    text = re.sub(r"[^\w\s]", "", text)
+
     # Collapse multiple spaces
     text = re.sub(r"\s+", " ", text).strip()
     return text
+
 
 def tokenize(text: str):
     """Tokenize normalized text into words."""
     text = normalize_text(text)
     return text.split() if text else []
 
+
 def compute_text_score(target: str, recognized: str) -> dict:
     """
     Compute detailed scoring for recognized text vs target text.
 
-    Returns a dict:
+    Returns:
     {
       'text_score': float (0-100),
       'wer': float (Word Error Rate),

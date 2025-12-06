@@ -25,3 +25,10 @@ whisper
 
 # Environment variables
 python-dotenv
+
+whisper
+jiwer
+transformers
+torchaudio
+pydub
+soundfile
