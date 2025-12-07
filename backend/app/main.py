@@ -13,6 +13,7 @@ from .hybrid_scoring import compute_per_word_scores
 
 app = FastAPI()
 
+# CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -20,26 +21,33 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Directories
 BASE_DIR = Path(__file__).resolve().parent
 UPLOAD_DIR = BASE_DIR / "uploads"
 UPLOAD_DIR.mkdir(exist_ok=True)
 
+# Serve static TTS audio
 app.mount("/static", StaticFiles(directory=str(UPLOAD_DIR)), name="static")
 
+# Supported language mappings
 LANG_MAP = {
     "hindi": "hi", "hi": "hi",
     "english": "en", "en": "en",
-    "spanish": "es", "es": "es", 
+    "spanish": "es", "es": "es",
     "french": "fr", "fr": "fr",
     "german": "de", "de": "de",
-    "japanese": "ja", "ja": "ja"
+    "japanese": "ja", "ja": "ja",
+    "kannada": "kn", "kn": "kn",
+    "tamil": "ta", "ta": "ta",
+    "telugu": "te", "te": "te",
+    "gujarati": "gu", "gu": "gu"
 }
 
 def detect_and_rename(filepath: Path) -> Path:
-    """Detects if file is WebM or WAV via Magic Bytes"""
+    """Detect WebM or WAV via magic bytes and correct extension."""
     with open(filepath, "rb") as f:
         header = f.read(4)
-    
+
     new_path = filepath
     detected = "unknown"
 
@@ -48,14 +56,16 @@ def detect_and_rename(filepath: Path) -> Path:
         if filepath.suffix != ".webm":
             new_path = filepath.with_suffix(".webm")
             os.rename(filepath, new_path)
+
     elif header.startswith(b'RIFF'):
         detected = "wav"
         if filepath.suffix != ".wav":
             new_path = filepath.with_suffix(".wav")
             os.rename(filepath, new_path)
-            
+
     print(f"   🔎 Format Detected: {detected.upper()} (Header: {header.hex()})")
     return new_path
+
 
 @app.post("/process-audio/")
 def process_audio(
@@ -67,65 +77,63 @@ def process_audio(
     temp_raw_path = None
     
     try:
-        print(f"\n" + "="*40)
-        print(f"--- 🎤 Processing Request ---")
-        
-        # 1. SETUP
+        print("\n" + "="*40)
+        print("--- 🎤 Processing Request ---")
+
+        # 1. MAP LANGUAGE
         iso_lang_code = LANG_MAP.get(language.lower().strip(), "en")
+
+        # 2. SAVE RAW AUDIO
         original_ext = Path(file.filename).suffix
         temp_filename = f"raw_{int(time.time())}{original_ext}"
         temp_raw_path = UPLOAD_DIR / temp_filename
-        
-        # 2. SAVE RAW FILE
+
         with open(temp_raw_path, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
-            
-        # 3. FIX EXTENSION (WebM vs WAV)
-        final_raw_path = detect_and_rename(temp_raw_path)
-        print(f"   💾 Raw Saved: {final_raw_path}")
 
-        # 4. SILENCE CHECK (The New Diagnostic)
+        # 3. FIX EXTENSION
+        final_raw_path = detect_and_rename(temp_raw_path)
+        print(f"   💾 Saved as: {final_raw_path}")
+
+        # 4. LOAD + CHECK AUDIO (No Normalization!)
         try:
             audio = AudioSegment.from_file(str(final_raw_path))
-            
-            # CHECK VOLUME
+
             max_db = audio.max_dBFS
             print(f"   🔊 Volume Level: {max_db:.2f} dB")
 
-            if max_db == -float('inf'):
-                print("   ❌ CRITICAL: The audio is PURE DIGITAL SILENCE.")
-                raise HTTPException(status_code=400, detail="Microphone sent silence. Check input device.")
-            elif max_db < -50:
-                 print("   ⚠️ WARNING: Audio is very quiet. Trying to normalize...")
-            
-            # Normalize
-            audio = audio.normalize()
-            
-            if audio.duration_seconds < 0.5:
-                 raise HTTPException(status_code=400, detail="Audio too short (< 0.5s)")
+            if max_db == -float("inf"):
+                raise HTTPException(status_code=400, detail="Input audio is silent.")
+
+            if audio.duration_seconds < 0.4:
+                raise HTTPException(status_code=400, detail="Audio too short (<0.4s).")
 
         except Exception as e:
             print(f"❌ Audio Decode Error: {e}")
             raise HTTPException(status_code=400, detail=f"Audio error: {str(e)}")
 
-        # 5. EXPORT CLEAN WAV
+        # 5. EXPORT CLEAN WAV (No volume normalization)
         clean_filename = f"clean_{int(time.time())}.wav"
         filepath = UPLOAD_DIR / clean_filename
+
         audio = audio.set_frame_rate(16000).set_channels(1).set_sample_width(2)
         audio.export(filepath, format="wav")
 
-        # 6. SCORING
+        # 6. RUN HYBRID SCORING
         print(f"5. Sending to AI (Lang: {iso_lang_code})...")
         scores = compute_per_word_scores(target_text, iso_lang_code, str(filepath))
-        
-        recog_text = " ".join([w.get('recognized', '') for w in scores.get('words', [])])
-        print(f"6. ✅ Recognized: '{recog_text}'")
-        print("="*40 + "\n")
 
+        recog_text = " ".join([w.get("recognized", "") for w in scores.get("words", [])])
+        print(f"6. ✅ Recognized: '{recog_text}'")
+
+        print("="*40 + "\n")
         return scores
 
     except Exception as e:
         print(f"❌ ERROR: {e}")
         if temp_raw_path and os.path.exists(temp_raw_path):
-            os.remove(temp_raw_path)
+            try:
+                os.remove(temp_raw_path)
+            except:
+                pass
         raise HTTPException(status_code=500, detail=str(e))
