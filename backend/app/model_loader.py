@@ -1,14 +1,22 @@
-import whisper
+from faster_whisper import WhisperModel
 import torch
 
-# Configuration
-# "base" or "small" is best for CPU. "medium" needs a GPU with 5GB+ VRAM.
-MODEL_SIZE = "small" 
+# Choose model size
+MODEL_SIZE = "medium"
+
+# Detect device
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
-print(f"Loading Whisper model: {MODEL_SIZE} on {DEVICE}...")
-model = whisper.load_model(MODEL_SIZE).to(DEVICE)
-print("Model loaded successfully.")
+print(f"Loading FasterWhisper model: {MODEL_SIZE} on {DEVICE}...")
+
+# Load model with super-fast INT8 mode
+model = WhisperModel(
+    MODEL_SIZE,
+    device=DEVICE,
+    compute_type="int8"  # int8 = FAST + LOW MEMORY + good accuracy
+)
+
+print("FasterWhisper model loaded successfully.")
 
 def get_model():
     return model
