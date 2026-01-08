@@ -2,7 +2,7 @@ from faster_whisper import WhisperModel
 import torch
 
 # Choose model size
-MODEL_SIZE = "medium"
+MODEL_SIZE = "small"
 
 # Detect device
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
