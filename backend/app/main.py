@@ -14,7 +14,11 @@ import logging
 from backend.app.hybrid_scoring import compute_per_word_scores
 # 2. The New Modular Utility for Error Analysis
 from backend.app.scoring_utils import generate_analysis_report
-
+# 3. FastAPI Route Modules (API Layer)
+from backend.app.api.users import router as users_router
+from backend.app.api.passage import router as passage_router
+from backend.app.api.attempts import router as attempts_router
+from backend.app.api.errors import router as errors_router
 # --------------------
 # LOGGING SETUP
 # --------------------
@@ -47,7 +51,14 @@ logging.basicConfig(
 
 logger = logging.getLogger(__name__)
 app = FastAPI()
+# --------------------
+# API ROUTERS
+# --------------------
 
+app.include_router(users_router)
+app.include_router(passage_router)
+app.include_router(attempts_router)
+app.include_router(errors_router)
 # --------------------
 # CORS
 # --------------------

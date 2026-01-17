@@ -34,6 +34,6 @@ pydub
 soundfile
 
 #Database
-sqlalchemy 
-psycopg2-binary 
+sqlalchemy
+psycopg2-binary
 alembic
