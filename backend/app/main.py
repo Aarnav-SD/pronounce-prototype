@@ -8,17 +8,21 @@ import time
 import shutil
 import random
 import logging
+from contextlib import asynccontextmanager  # <--- NEW IMPORT
 
 # --- INTERNAL IMPORTS ---
-# 1. The Core Scoring Engine
+# 1. Model Loader (for pre-loading)
+from backend.app.model_loader import get_model  # <--- NEW IMPORT
+# 2. The Core Scoring Engine
 from backend.app.hybrid_scoring import compute_per_word_scores
-# 2. The New Modular Utility for Error Analysis
+# 3. The New Modular Utility for Error Analysis
 from backend.app.scoring_utils import generate_analysis_report
-# 3. FastAPI Route Modules (API Layer)
+# 4. FastAPI Route Modules (API Layer)
 from backend.app.api.users import router as users_router
 from backend.app.api.passage import router as passage_router
 from backend.app.api.attempts import router as attempts_router
 from backend.app.api.errors import router as errors_router
+
 # --------------------
 # LOGGING SETUP
 # --------------------
@@ -50,7 +54,34 @@ logging.basicConfig(
 )
 
 logger = logging.getLogger(__name__)
-app = FastAPI()
+
+# --------------------
+# LIFESPAN (STARTUP OPTIMIZATION)
+# --------------------
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """
+    This function runs BEFORE the API starts accepting requests.
+    We use it to load the heavy AI models into memory.
+    """
+    logger.info("🚀 Starting up Pronounce AI Backend...")
+    
+    try:
+        logger.info("⏳ Pre-loading Whisper Model... (This may take a few seconds)")
+        # This triggers the global _model loading logic in model_loader.py
+        get_model()
+        logger.info("✅ Whisper Model loaded and ready!")
+    except Exception as e:
+        logger.error(f"❌ Failed to load model on startup: {e}")
+    
+    yield  # API runs here
+    
+    logger.info("🛑 Shutting down application...")
+
+# Initialize FastAPI with the lifespan handler
+app = FastAPI(lifespan=lifespan)
+
 # --------------------
 # API ROUTERS
 # --------------------
@@ -59,6 +90,7 @@ app.include_router(users_router)
 app.include_router(passage_router)
 app.include_router(attempts_router)
 app.include_router(errors_router)
+
 # --------------------
 # CORS
 # --------------------
